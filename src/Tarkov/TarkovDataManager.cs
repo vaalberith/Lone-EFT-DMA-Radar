@@ -26,6 +26,8 @@ SOFTWARE.
  *
 */
 
+using LoneEftDmaRadar.Tarkov.GameWorld.Hazards;
+using LoneEftDmaRadar.Tarkov.GameWorld.Quests;
 using LoneEftDmaRadar.Web.TarkovDev.Data;
 using System.Collections.Frozen;
 
@@ -39,11 +41,6 @@ namespace LoneEftDmaRadar.Tarkov
         private static readonly FileInfo _bakDataFile = new(Path.Combine(App.ConfigPath.FullName, "data.json.bak"));
         private static readonly FileInfo _tempDataFile = new(Path.Combine(App.ConfigPath.FullName, "data.json.tmp"));
         private static readonly FileInfo _dataFile = new(Path.Combine(App.ConfigPath.FullName, "data.json"));
-        private static readonly JsonSerializerOptions _jsonOptions = new()
-        {
-            PropertyNameCaseInsensitive = true,
-            NumberHandling = JsonNumberHandling.AllowReadingFromString
-        };
 
         /// <summary>
         /// Master items dictionary - mapped via BSGID String.
@@ -59,6 +56,14 @@ namespace LoneEftDmaRadar.Tarkov
         /// Maps Data for Tarkov.
         /// </summary>
         public static FrozenDictionary<string, MapElement> MapData { get; private set; }
+        /// <summary>
+        ///  Tasks Data for Tarkov.
+        /// </summary>
+        public static FrozenDictionary<string, TaskElement> TaskData { get; private set; }
+        /// <summary>
+        /// All Task Zones mapped by MapID -> ZoneID -> Position.
+        /// </summary>
+        public static FrozenDictionary<string, FrozenDictionary<string, Vector3>> TaskZones { get; private set; }
         /// <summary>
         /// XP Table for Tarkov.
         /// </summary>
@@ -126,6 +131,35 @@ namespace LoneEftDmaRadar.Tarkov
                 .DistinctBy(x => x.BsgId, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(k => k.BsgId, v => v, StringComparer.OrdinalIgnoreCase)
                 .ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+            TaskData = (data.Tasks ?? new List<TaskElement>())
+                .Where(t => !string.IsNullOrWhiteSpace(t?.Id))
+                .DistinctBy(t => t.Id, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(t => t.Id, t => t, StringComparer.OrdinalIgnoreCase)
+                .ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+            TaskZones = TaskData.Values
+                .Where(task => task.Objectives is not null) // Ensure the Objectives are not null
+                .SelectMany(task => task.Objectives)   // Flatten the Objectives from each TaskElement
+                .Where(objective => objective.Zones is not null) // Ensure the Zones are not null
+                .SelectMany(objective => objective.Zones)    // Flatten the Zones from each Objective
+                .Where(zone => zone.Position is not null && zone.Map?.NameId is not null) // Ensure Position and Map are not null
+                .GroupBy(zone => zone.Map.NameId, zone => new
+                {
+                    id = zone.Id,
+                    pos = new Vector3(zone.Position.X, zone.Position.Y, zone.Position.Z)
+                }, StringComparer.OrdinalIgnoreCase)
+                .DistinctBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key, // Map Id
+                    group => group
+                    .DistinctBy(x => x.id, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        zone => zone.id,
+                        zone => zone.pos,
+                        StringComparer.OrdinalIgnoreCase
+                    ).ToFrozenDictionary(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
             XPTable = data.PlayerLevels?.ToDictionary(x => x.Exp, x => x.Level) ?? new Dictionary<int, int>();
             var maps = data.Maps.ToDictionary(x => x.NameId, StringComparer.OrdinalIgnoreCase) ??
                 new Dictionary<string, MapElement>(StringComparer.OrdinalIgnoreCase);
@@ -178,7 +212,7 @@ namespace LoneEftDmaRadar.Tarkov
                     if (!file.Exists)
                         return null;
                     using var dataStream = File.OpenRead(file.FullName);
-                    return await JsonSerializer.DeserializeAsync<TarkovData>(dataStream, _jsonOptions) ??
+                    return await JsonSerializer.DeserializeAsync<TarkovData>(dataStream, App.JsonOptions) ??
                         throw new InvalidOperationException($"Failed to deserialize {nameof(dataStream)}");
                 }
                 catch
@@ -219,7 +253,7 @@ namespace LoneEftDmaRadar.Tarkov
                         destFileName: _dataFile.FullName,
                         overwrite: true);
                 }
-                var data = JsonSerializer.Deserialize<TarkovData>(dataJson, _jsonOptions) ??
+                var data = JsonSerializer.Deserialize<TarkovData>(dataJson, App.JsonOptions) ??
                     throw new InvalidOperationException($"Failed to deserialize {nameof(dataJson)}");
                 SetData(data);
             }
@@ -249,21 +283,9 @@ namespace LoneEftDmaRadar.Tarkov
 
             [JsonPropertyName("playerLevels")]
             public List<PlayerLevelElement> PlayerLevels { get; set; }
-        }
 
-
-        public class PositionElement
-        {
-            [JsonPropertyName("x")]
-            public float X { get; set; }
-
-            [JsonPropertyName("y")]
-            public float Y { get; set; }
-
-            [JsonPropertyName("z")]
-            public float Z { get; set; }
-
-            public Vector3 AsVector3() => new(X, Y, Z);
+            [JsonPropertyName("tasks")]
+            public List<TaskElement> Tasks { get; set; } = new();
         }
 
         public partial class MapElement
@@ -281,7 +303,7 @@ namespace LoneEftDmaRadar.Tarkov
             public List<TransitElement> Transits { get; set; } = new();
 
             [JsonPropertyName("hazards")]
-            public List<HazardElement> Hazards { get; set; } = new();
+            public List<GenericWorldHazard> Hazards { get; set; } = new();
         }
 
         public partial class PlayerLevelElement
@@ -293,15 +315,6 @@ namespace LoneEftDmaRadar.Tarkov
             public int Level { get; set; }
         }
 
-        public partial class HazardElement
-        {
-            [JsonPropertyName("hazardType")]
-            public string HazardType { get; set; }
-
-            [JsonPropertyName("position")]
-            public PositionElement Position { get; set; }
-        }
-
         public partial class ExtractElement
         {
             [JsonPropertyName("name")]
@@ -311,7 +324,7 @@ namespace LoneEftDmaRadar.Tarkov
             public string Faction { get; set; }
 
             [JsonPropertyName("position")]
-            public PositionElement Position { get; set; }
+            public Vector3 Position { get; set; }
 
             [JsonIgnore]
             public bool IsPmc => Faction?.Equals("pmc", StringComparison.OrdinalIgnoreCase) ?? false;
@@ -325,8 +338,154 @@ namespace LoneEftDmaRadar.Tarkov
             public string Description { get; set; }
 
             [JsonPropertyName("position")]
-            public PositionElement Position { get; set; }
+            public Vector3 Position { get; set; }
         }
+
+
+        public partial class TaskElement
+        {
+            [JsonPropertyName("id")]
+            public string Id { get; set; }
+
+            [JsonPropertyName("name")]
+            public string Name { get; set; }
+
+            [JsonPropertyName("objectives")]
+            public List<ObjectiveElement> Objectives { get; set; }
+
+            public partial class ObjectiveElement
+            {
+                [JsonPropertyName("id")]
+                public string Id { get; set; }
+
+                [JsonPropertyName("type")]
+#pragma warning disable IDE1006 // Naming Styles
+                public string _type { get; set; }
+#pragma warning restore IDE1006 // Naming Styles
+
+                [JsonIgnore]
+                private static readonly FrozenDictionary<string, QuestObjectiveType> _objectiveTypes = 
+    new Dictionary<string, QuestObjectiveType>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["visit"] = QuestObjectiveType.Visit,
+        ["mark"] = QuestObjectiveType.Mark,
+        ["giveItem"] = QuestObjectiveType.GiveItem,
+        ["shoot"] = QuestObjectiveType.Shoot,
+        ["extract"] = QuestObjectiveType.Extract,
+        ["findQuestItem"] = QuestObjectiveType.FindQuestItem,
+        ["giveQuestItem"] = QuestObjectiveType.GiveQuestItem,
+        ["findItem"] = QuestObjectiveType.FindItem,
+        ["buildWeapon"] = QuestObjectiveType.BuildWeapon,
+        ["plantItem"] = QuestObjectiveType.PlantItem,
+        ["plantQuestItem"] = QuestObjectiveType.PlantQuestItem,
+        ["traderLevel"] = QuestObjectiveType.TraderLevel,
+        ["traderStanding"] = QuestObjectiveType.TraderStanding,
+        ["skill"] = QuestObjectiveType.Skill,
+        ["experience"] = QuestObjectiveType.Experience,
+        ["useItem"] = QuestObjectiveType.UseItem,
+        ["sellItem"] = QuestObjectiveType.SellItem,
+        ["taskStatus"] = QuestObjectiveType.TaskStatus,
+    }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+                [JsonIgnore]
+                public QuestObjectiveType Type => 
+                    _objectiveTypes.TryGetValue(_type, out var type) ? type : QuestObjectiveType.Unknown;
+
+                [JsonPropertyName("description")]
+                public string Description { get; set; }
+
+                [JsonPropertyName("requiredKeys")]
+                public List<List<MarkerItemClass>> RequiredKeys { get; set; }
+
+                [JsonPropertyName("maps")]
+                public List<TaskMapElement> Maps { get; set; }
+
+                [JsonPropertyName("zones")]
+                public List<TaskZoneElement> Zones { get; set; }
+
+                [JsonPropertyName("count")]
+                public int Count { get; set; }
+
+                [JsonPropertyName("foundInRaid")]
+                public bool FoundInRaid { get; set; }
+
+                [JsonPropertyName("item")]
+                public MarkerItemClass Item { get; set; }
+
+                [JsonPropertyName("questItem")]
+                public ObjectiveQuestItem QuestItem { get; set; }
+
+                [JsonPropertyName("markerItem")]
+                public MarkerItemClass MarkerItem { get; set; }
+
+                public class MarkerItemClass
+                {
+                    [JsonPropertyName("id")]
+                    public string Id { get; set; }
+
+                    [JsonPropertyName("name")]
+                    public string Name { get; set; }
+
+                    [JsonPropertyName("shortName")]
+                    public string ShortName { get; set; }
+                }
+
+                public class ObjectiveQuestItem
+                {
+                    [JsonPropertyName("id")]
+                    public string Id { get; set; }
+
+                    [JsonPropertyName("name")]
+                    public string Name { get; set; }
+
+                    [JsonPropertyName("shortName")]
+                    public string ShortName { get; set; }
+
+                    [JsonPropertyName("normalizedName")]
+                    public string NormalizedName { get; set; }
+
+                    [JsonPropertyName("description")]
+                    public string Description { get; set; }
+                }
+
+                public class TaskZoneElement
+                {
+                    [JsonPropertyName("id")]
+                    public string Id { get; set; }
+
+                    [JsonPropertyName("position")]
+                    public PositionElement Position { get; set; }
+
+                    [JsonPropertyName("map")]
+                    public TaskMapElement Map { get; set; }
+                }
+
+                public class TaskMapElement
+                {
+                    [JsonPropertyName("nameId")]
+                    public string NameId { get; set; }
+
+                    [JsonPropertyName("normalizedName")]
+                    public string NormalizedName { get; set; }
+
+                    [JsonPropertyName("name")]
+                    public string Name { get; set; }
+                }
+
+                public class PositionElement
+                {
+                    [JsonPropertyName("y")]
+                    public float Y { get; set; }
+
+                    [JsonPropertyName("x")]
+                    public float X { get; set; }
+
+                    [JsonPropertyName("z")]
+                    public float Z { get; set; }
+                }
+            }
+        }
+
 
         #endregion
     }

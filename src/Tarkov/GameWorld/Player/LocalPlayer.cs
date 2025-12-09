@@ -26,7 +26,9 @@ SOFTWARE.
  *
 */
 
+using Collections.Pooled;
 using LoneEftDmaRadar.Tarkov.Unity;
+using LoneEftDmaRadar.Tarkov.Unity.Collections;
 using LoneEftDmaRadar.Tarkov.Unity.Structures;
 using VmmSharpEx.Scatter;
 
@@ -142,5 +144,59 @@ namespace LoneEftDmaRadar.Tarkov.GameWorld.Player
                 base.OnValidateTransforms(round1, round2);
             }
         }
+
+        #region Wishlist
+
+        /// <summary>
+        /// All Items on the Player's WishList.
+        /// </summary>
+        public static IReadOnlyDictionary<string, byte> WishlistItems => _wishlistItems;
+        private static readonly ConcurrentDictionary<string, byte> _wishlistItems = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly RateLimiter _wishlistRL = new(TimeSpan.FromSeconds(10));
+
+        /// <summary>
+        /// Set the Player's WishList.
+        /// </summary>
+        public void RefreshWishlist(CancellationToken ct)
+        {
+            try
+            {
+                if (!_wishlistRL.TryEnter())
+                    return;
+                    
+                var wishlistManager = Memory.ReadPtr(Profile + Offsets.Profile.WishlistManager);
+                var itemsPtr = Memory.ReadPtr(wishlistManager + Offsets.WishlistManager._wishlistItems);
+                using var items = UnityDictionary<MongoID, int>.Create(itemsPtr);
+                using var newWishlist = new PooledSet<string>(items.Count, StringComparer.OrdinalIgnoreCase);
+                
+                foreach (var item in items)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        newWishlist.Add(item.Key.ReadString());
+                    }
+                    catch { }
+                }
+                
+                foreach (var existing in _wishlistItems.Keys)
+                {
+                    if (!newWishlist.Contains(existing))
+                        _wishlistItems.TryRemove(existing, out _);
+                }
+                
+                foreach (var newItem in newWishlist)
+                {
+                    _wishlistItems.TryAdd(newItem, 0);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[Wishlist] ERROR Refreshing: {ex}");
+            }
+        }
+
+        #endregion
     }
 }

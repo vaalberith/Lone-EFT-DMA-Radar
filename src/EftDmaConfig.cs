@@ -41,10 +41,6 @@ namespace LoneEftDmaRadar
     /// </summary>
     public sealed class EftDmaConfig
     {
-        private static readonly JsonSerializerOptions _jsonOptions = new()
-        {
-            WriteIndented = true
-        };
         /// <summary>
         /// Public Constructor required for deserialization.
         /// DO NOT CALL - USE LOAD().
@@ -128,6 +124,13 @@ namespace LoneEftDmaRadar
         [JsonInclude]
         [JsonPropertyName("infoWidget")]
         public InfoWidgetConfig InfoWidget { get; private set; } = new();
+
+        /// <summary>
+        /// Quest Helper Cfg
+        /// </summary>
+        [JsonPropertyName("questHelper")]
+        [JsonInclude]
+        public QuestHelperConfig QuestHelper { get; private set; } = new();
 
         /// <summary>
         /// Player Watchlist Collection.
@@ -381,7 +384,7 @@ namespace LoneEftDmaRadar
                 if (!file.Exists)
                     return null;
                 string json = File.ReadAllText(file.FullName);
-                return JsonSerializer.Deserialize<EftDmaConfig>(json, _jsonOptions);
+                return JsonSerializer.Deserialize<EftDmaConfig>(json, App.JsonOptions);
             }
             catch
             {
@@ -416,7 +419,7 @@ namespace LoneEftDmaRadar
 
         private static void SaveInternal(EftDmaConfig config)
         {
-            var json = JsonSerializer.Serialize(config, _jsonOptions);
+            var json = JsonSerializer.Serialize(config, App.JsonOptions);
             using (var fs = new FileStream(
                 _tempFile.FullName,
                 FileMode.Create,
@@ -540,6 +543,12 @@ namespace LoneEftDmaRadar
         /// </summary>
         [JsonPropertyName("markSusPlayers")]
         public bool MarkSusPlayers { get; set; } = false;
+
+        /// <summary>
+        /// Show exfils on radar.
+        /// </summary>
+        [JsonPropertyName("showExfils")]
+        public bool ShowExfils { get; set; } = true;
     }
 
     public sealed class LootConfig
@@ -584,7 +593,7 @@ namespace LoneEftDmaRadar
         /// Show loot on the player's wishlist (manual only).
         /// </summary>
         [JsonPropertyName("showWishlist")]
-        public bool ShowWishlist { get; set; }
+        public bool ShowWishlist { get; set; } = false;
 
     }
 
@@ -768,5 +777,22 @@ namespace LoneEftDmaRadar
         /// </summary>
         [JsonPropertyName("password")]
         public string Password { get; set; } = Utilities.GetRandomPassword(10);
+    }
+
+    public sealed class QuestHelperConfig
+    {
+        /// <summary>
+        /// Enables Quest Helper
+        /// </summary>
+        [JsonPropertyName("enabled")]
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>
+        /// Quests that are overridden/disabled.
+        /// </summary>
+        [JsonPropertyName("blacklistedQuests")]
+        [JsonInclude]
+        [JsonConverter(typeof(CaseInsensitiveConcurrentDictionaryConverter<byte>))]
+        public ConcurrentDictionary<string, byte> BlacklistedQuests { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }

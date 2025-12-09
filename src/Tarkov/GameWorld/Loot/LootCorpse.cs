@@ -66,6 +66,8 @@ namespace LoneEftDmaRadar.Tarkov.GameWorld.Loot
             Player?.LootObject ??= this;
         }
 
+        public override string GetUILabel() => this.Name;
+
         public override void Draw(SKCanvas canvas, EftMapParams mapParams, LocalPlayer localPlayer)
         {
             var heightDiff = Position.Y - localPlayer.Position.Y;
